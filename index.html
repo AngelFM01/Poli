@@ -227,7 +227,7 @@ MEJORAS AÑADIDAS:
         .btn-primary { background:#2196F3; color:white; }
         .btn-danger { background:#f44336; color:white; }
         .btn-success { background:#4CAF50; color:white; }
-        input[type=text] { width:100%; padding:12px; border-radius:8px; border:2px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color:white; margin-bottom:10px; }
+        input[type=text] { width:100%; padding:7px; border-radius:8px; border:2px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color:white; margin-bottom:10px; }
         .info-box { background: rgba(0,0,0,0.28); color: rgba(255,255,255,0.9); padding:10px; border-radius:8px; margin-bottom:12px; }
         .signs-list { margin-top:12px; }
         .sign-item { display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.06); padding:10px; border-radius:8px; margin-bottom:8px; }
@@ -247,7 +247,7 @@ MEJORAS AÑADIDAS:
         </div>
 
         <div class="main-grid">
-            <div class="panel">
+            <div class="panel" id="panel1">
                 <div class="video-container">
                     <div class="video-wrapper">
                         <div class="placeholder" id="placeholder">
@@ -277,8 +277,11 @@ MEJORAS AÑADIDAS:
 
             <div class="panel">
                 <div id="trainPanel">
-                    <h2 style="color:white; margin-bottom:10px;">Entrenar Nueva Seña</h2>
-                    <input type="text" id="signName" placeholder="Nombre de la seña (ej: Hola, Gracias, Te amo)">
+                    <div class="train-inline">
+                    <h2 style="color:white; margin-bottom:10px;" class="tit2">Entrenar Nueva Seña</h2>
+                    <input type="text" id="signName" placeholder="Nombre de la seña (ej: Hola, Gracias, Te amo)"> 
+                    </div>
+                    
                     <button class="btn btn-success" id="recordBtn" onclick="recordSign()" disabled>⏺️ Grabar Seña (3 segundos)</button>
                     <div class="info-box"> <strong>📝 Instrucciones:</strong><br>1. Escribe el nombre de la seña<br>2. Presiona "Grabar"<br>3. Realiza el gesto completo durante 3 segundos<br>4. Para gestos con movimiento, repítelo continuamente<br>5. Usa 1 o 2 manos según el gesto</div>
                 </div>
@@ -729,3 +732,127 @@ MEJORAS AÑADIDAS:
     </script>
 </body>
 </html>
+
+<style>
+
+/* ===========================================
+   Ajustes para móviles (pantallas menores a 768px)
+   =========================================== */
+@media (max-width: 768px) {
+
+    /* Media queries original del final del archivo */
+@media (max-width: 768px) {
+    .main-grid {
+        grid-template-columns: 1fr !important;
+        gap: 15px;
+    }
+
+    .video-container {
+        width: 100%;
+        max-width: 100%;
+        margin: 0 auto;
+    }
+
+    .video-wrapper {
+        width: 100%;
+        padding-bottom: 150%;
+    }
+
+    video,
+    canvas,
+    #trailCanvas {
+        width: 190% !important;
+        height: 100% !important;
+        object-fit: cover;
+    }
+
+    .info-box {
+        display: none !important;
+    }
+
+    .status-badge,
+    .recording-indicator,
+    .recognition-overlay {
+        transform: scale(0.7);
+    }
+
+    body {
+        padding: 0 !important;
+        margin: 0 !important;
+    }
+
+    #panel1 {
+        padding: 0 !important;
+        margin: 0 !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        background: transparent !important;
+    }
+
+    #cameraBtn {
+        padding: 5px !important;
+        margin: 0 !important;
+    }
+
+    .panel {
+        padding-top: 0 !important;
+        margin-top: 0 !important;
+    }
+
+    /* Elemento que contiene título + input */
+    .train-inline {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: 10px;
+        width: 100%;
+    }
+
+    .train-inline h2.tit2 {
+        font-size: 16px !important;
+        white-space: nowrap;
+        margin: 0;
+    }
+
+    .train-inline input#signName {
+        flex: 1;
+        margin: 0;
+    }
+}
+
+@media (max-width: 480px) {
+
+    .video-wrapper {
+        padding-bottom: 150%;
+    }
+
+    .status-badge,
+    .recording-indicator,
+    .recognition-overlay {
+        transform: scale(0.8);
+    }
+}
+
+       
+}
+
+/* ===========================================
+   Ajustes extra para pantallas muy pequeñas
+   =========================================== */
+@media (max-width: 480px) {
+
+    .video-wrapper {
+        padding-bottom: 150%; /* Continúa ancho, pero más alto para no recortar */
+    }
+
+    .status-badge,
+    .recording-indicator,
+    .recognition-overlay {
+        transform: scale(0.8);
+    }
+}
+
+
+</style>
+
+
