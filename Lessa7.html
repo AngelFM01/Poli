@@ -1,0 +1,731 @@
+<!--
+MEJORAS AÑADIDAS:
+1. Las señas se guardan en localStorage bajo la clave: 'storedSigns'. No se guarda en carpeta física.
+2. Código modularizado: funciones separadas para limpieza, dibujo, almacenamiento y reconocimiento.
+3. Manejo de errores mejorado y validaciones de datos.
+4. Optimización del renderizado del canvas para reducir parpadeos.
+5. Normalización de puntos para mejorar consistencia del reconocimiento.
+-->
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Traductor de Lenguaje de Señas</title>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous">
+    // ----------------------
+    // MODELO DTW PARA RECONOCIMIENTO (MEJOR PARA SEÑALES DINÁMICAS)
+    // ----------------------
+
+    // Buffer en vivo de vectores (últimos frames) para reconocimiento
+    let liveBuffer = [];
+    const LIVE_BUFFER_MAX = 30; // frames
+
+    // Convierte un frame (como se guarda en recordingData) a vector fijo
+    // Vector fijo: [hand0(21*(x,y)), hand1(21*(x,y))] --> longitud 84 (42 por mano)
+    function frameToVector(frame) {
+        // frame.landmarks es array de manos, con cada mano 21 puntos {x,y,z}
+        const HAND_LEN = 21;
+        const perHand = [];
+
+        // ordenar manos por handedness si existe: Left primero, luego Right
+        let left = null, right = null;
+        if (frame.handedness && frame.handedness.length === (frame.landmarks ? frame.landmarks.length : 0)) {
+            for (let i = 0; i < frame.handedness.length; i++) {
+                const label = frame.handedness[i].label || '';
+                if (label.toLowerCase().includes('left')) left = frame.landmarks[i];
+                else if (label.toLowerCase().includes('right')) right = frame.landmarks[i];
+            }
+        }
+        // fallback: asignar por índice
+        if (!left && frame.landmarks && frame.landmarks[0]) left = frame.landmarks[0];
+        if (!right && frame.landmarks && frame.landmarks[1]) right = frame.landmarks[1];
+
+        const handsOrdered = [left, right];
+
+        handsOrdered.forEach(hand => {
+            if (!hand) {
+                // llenar con ceros si no hay mano
+                for (let i = 0; i < HAND_LEN; i++) { perHand.push(0); perHand.push(0); }
+            } else {
+                // normalizar respecto a la muñeca (landmark 0)
+                const wrist = hand[0];
+                for (let i = 0; i < HAND_LEN; i++) {
+                    const p = hand[i];
+                    const nx = p.x - wrist.x;
+                    const ny = p.y - wrist.y;
+                    perHand.push(nx);
+                    perHand.push(ny);
+                }
+            }
+        });
+
+        return perHand; // array length 84
+    }
+
+    // DTW (Dynamic Time Warping) - distancia entre dos secuencias de vectores
+    function dtwDistance(seqA, seqB) {
+        const n = seqA.length;
+        const m = seqB.length;
+        if (n === 0 || m === 0) return Infinity;
+
+        // crear matriz (n+1)*(m+1)
+        const INF = 1e12;
+        const dtw = Array.from({length: n+1}, () => new Float64Array(m+1));
+        for (let i=0;i<=n;i++) dtw[i].fill(INF);
+        dtw[0][0] = 0;
+
+        for (let i=1;i<=n;i++){
+            for (let j=1;j<=m;j++){
+                const cost = euclideanDistance(seqA[i-1], seqB[j-1]);
+                const last = Math.min(dtw[i-1][j], dtw[i][j-1], dtw[i-1][j-1]);
+                dtw[i][j] = cost + last;
+            }
+        }
+        return dtw[n][m];
+    }
+
+    function euclideanDistance(vecA, vecB) {
+        // ambos vectores tienen misma longitud
+        let sum = 0;
+        for (let i=0;i<vecA.length;i++){
+            const d = (vecA[i] || 0) - (vecB[i] || 0);
+            sum += d*d;
+        }
+        return Math.sqrt(sum);
+    }
+
+    // Normalizar distancia DTW a una "similitud" entre 0 y 1
+    function dtwSimilarity(seqA, seqB) {
+        const dist = dtwDistance(seqA, seqB);
+        // normalizar por la longitud promedio y la dimensión vectorial
+        const avgLen = (seqA.length + seqB.length) / 2 || 1;
+        const dim = seqA[0] ? seqA[0].length : 84;
+        // factor heurístico: mayor distancia -> menor similitud
+        const norm = dist / (avgLen * Math.sqrt(dim));
+        const sim = Math.max(0, 1 - norm);
+        return sim;
+    }
+
+    // Reemplazo de recognizeSign para usar DTW con el liveBuffer
+    function recognizeSign(results) {
+        if (!results) return;
+        // construir vector actual y agregar al buffer
+        const frame = { landmarks: results.multiHandLandmarks || [], handedness: results.multiHandedness || [] };
+        const vec = frameToVector(frame);
+        liveBuffer.push(vec);
+        if (liveBuffer.length > LIVE_BUFFER_MAX) liveBuffer.shift();
+
+        // si no tenemos suficientes frames, no reconocer
+        if (liveBuffer.length < 6) {
+            document.getElementById('recognitionOverlay').style.display = 'none';
+            return;
+        }
+
+        // comparar con cada seña entrenada
+        let bestName = null; let bestScore = 0;
+        for (const name in trainedSigns) {
+            const entry = trainedSigns[name];
+            if (!entry || !entry.vectors || entry.vectors.length === 0) continue;
+            // cada entry.vectors es una matriz de secuencias guardadas: [ [v1, v2, ...], [ ... ] ]
+            for (const storedSeq of entry.vectors) {
+                const score = dtwSimilarity(liveBuffer, storedSeq);
+                if (score > bestScore) { bestScore = score; bestName = name; }
+            }
+        }
+
+        const THRESH = 0.55; // umbral (puedes ajustar)
+        if (bestName && bestScore >= THRESH) {
+            showRecognition(bestName, Math.round(bestScore * 100));
+        } else {
+            document.getElementById('recognitionOverlay').style.display = 'none';
+        }
+    }
+
+    // Modificar recordSign para guardar vectores DTW
+    (function patchRecordSignToSaveVectors(){
+        const originalRecord = recordSign;
+        recordSign = function(){
+            const name = document.getElementById('signName').value.trim();
+            if (!name) { alert('⚠️ Ingresa un nombre para la seña'); return; }
+            if (!video.srcObject) { alert('📷 Inicia la cámara primero'); return; }
+
+            // reset temporal
+            isRecording = true; recordingData = []; recordBtn.disabled = true; document.getElementById('recordingIndicator').style.display = 'flex';
+
+            setTimeout(()=>{
+                isRecording = false; document.getElementById('recordingIndicator').style.display = 'none'; recordBtn.disabled = false;
+                if (recordingData.length > 6) {
+                    // convertir cada frame a vector
+                    const vectors = recordingData.map(f => frameToVector({landmarks: f.landmarks || [], handedness: f.handedness || []}));
+                    // almacenar: conservar vectores + metadatos
+                    trainedSigns[name] = trainedSigns[name] || { vectors: [], timestamp: Date.now(), frames: 0 };
+                    trainedSigns[name].vectors.push(vectors);
+                    trainedSigns[name].timestamp = Date.now();
+                    trainedSigns[name].frames = (trainedSigns[name].frames || 0) + recordingData.length;
+                    saveSigns();
+                    updateSignsList();
+                    alert(`✅ Seña "${name}" guardada (${recordingData.length} frames)`);
+                } else {
+                    alert('❌ No se capturaron suficientes frames. Intenta de nuevo.');
+                }
+            }, 3000);
+
+            // Durante la grabación, alimentamos recordingData con frames desde onResults
+            // (ya lo hace la implementación previa que empuja landmarks en onResults)
+        };
+    })();
+
+    // Reescribir loadSigns/saveSigns para asegurar compatibilidad con la nueva estructura
+    (function patchStorageFunctions(){
+        const _load = loadSigns;
+        loadSigns = function(){
+            try {
+                const raw = localStorage.getItem('trainedSigns');
+                if (raw) trainedSigns = JSON.parse(raw) || {};
+            } catch(e){ console.error(e); trainedSigns = {}; }
+            updateSignsList();
+        };
+        const _save = saveSigns;
+        saveSigns = function(){
+            try { localStorage.setItem('trainedSigns', JSON.stringify(trainedSigns)); } catch(e){ console.error(e); }
+            updateSignsList();
+        };
+    })();
+
+    // Nota: ya cargamos loadSigns() en el inicio del script; si ya existía, esta versión la reemplaza.
+
+</script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: white; text-align: center; font-size: 2.5em; margin-bottom: 10px; }
+        .subtitle { color: rgba(255,255,255,0.85); text-align:center; margin-bottom:30px; }
+        .mode-selector { display:flex; gap:15px; justify-content:center; margin-bottom:30px; }
+        .mode-btn { padding: 12px 22px; border:none; border-radius:10px; font-size:1.05em; font-weight:600; cursor:pointer; background: rgba(255,255,255,0.12); color:white; }
+        .mode-btn.active { background: #4CAF50; transform:translateY(-2px); box-shadow: 0 5px 15px rgba(0,0,0,0.3); }
+        .main-grid { display:grid; grid-template-columns: 1.2fr 1fr; gap:20px; }
+        .panel { background: rgba(255,255,255,0.08); backdrop-filter: blur(8px); border-radius:12px; padding:20px; box-shadow: 0 6px 24px rgba(0,0,0,0.12); }
+        .video-container { position:relative; background:black; border-radius:10px; overflow:hidden; margin-bottom:12px; }
+        .video-wrapper { position:relative; width:100%; padding-bottom:56.25%; }
+        video, canvas { position:absolute; top:0; left:0; width:100%; height:100%; object-fit:cover; }
+        .placeholder { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); color: rgba(255,255,255,0.85); text-align:center; padding:20px; }
+        .status-badge { position:absolute; top:12px; right:12px; background: rgba(0,0,0,0.6); color:white; padding:8px 12px; border-radius:20px; font-weight:700; z-index:12; }
+        .recording-indicator { position:absolute; top:12px; left:12px; background: rgba(255,0,0,0.9); color:white; padding:8px 12px; border-radius:20px; display:none; align-items:center; gap:8px; z-index:12; }
+        .rec-dot { width:10px; height:10px; border-radius:50%; background:white; animation: blink 1s infinite; }
+        @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+        .recognition-overlay { position:absolute; bottom:12px; left:12px; right:12px; background: rgba(0,0,0,0.75); color:white; padding:12px; border-radius:10px; z-index:11; display:none; }
+        .confidence-bar { width:100%; height:10px; background: rgba(255,255,255,0.12); border-radius:6px; overflow:hidden; margin-top:8px; }
+        .confidence-fill { height:100%; background: linear-gradient(90deg,#4CAF50,#8BC34A); transition: width 0.25s; }
+        .btn { width:100%; padding:12px; border:none; border-radius:8px; font-size:1em; font-weight:700; cursor:pointer; margin-bottom:8px; }
+        .btn-primary { background:#2196F3; color:white; }
+        .btn-danger { background:#f44336; color:white; }
+        .btn-success { background:#4CAF50; color:white; }
+        input[type=text] { width:100%; padding:12px; border-radius:8px; border:2px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.06); color:white; margin-bottom:10px; }
+        .info-box { background: rgba(0,0,0,0.28); color: rgba(255,255,255,0.9); padding:10px; border-radius:8px; margin-bottom:12px; }
+        .signs-list { margin-top:12px; }
+        .sign-item { display:flex; justify-content:space-between; align-items:center; background: rgba(255,255,255,0.06); padding:10px; border-radius:8px; margin-bottom:8px; }
+        .delete-btn { background: rgba(255,0,0,0.6); color:white; border:none; padding:6px 10px; border-radius:6px; cursor:pointer; }
+        .empty-state { color: rgba(255,255,255,0.6); text-align:center; padding:10px; }
+        @media (max-width:968px){ .main-grid{ grid-template-columns:1fr } h1{ font-size:1.6em } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤟 Traductor de Lenguaje de Señas</h1>
+        <p class="subtitle">Detección de 2 manos con análisis de movimiento</p>
+
+        <div class="mode-selector">
+            <button class="mode-btn active" id="trainBtn" onclick="setMode('train')">💾 Entrenar</button>
+            <button class="mode-btn" id="recognizeBtn" onclick="setMode('recognize')">👁️ Reconocer</button>
+        </div>
+
+        <div class="main-grid">
+            <div class="panel">
+                <div class="video-container">
+                    <div class="video-wrapper">
+                        <div class="placeholder" id="placeholder">
+                            <h2>📹</h2>
+                            <p>Presiona "Iniciar Cámara" para comenzar</p>
+                        </div>
+                        <video id="video" autoplay playsinline style="display:none"></video>
+                        <canvas id="canvas"></canvas>
+                        <canvas id="trailCanvas" style="pointer-events:none;"></canvas>
+
+                        <div class="recording-indicator" id="recordingIndicator"><div class="rec-dot"></div><span id="recordingText">Grabando...</span></div>
+                        <div class="status-badge" id="statusBadge" style="display:none;"><span id="statusText">Sin detección</span></div>
+                        <div id="recognitionOverlay" class="recognition-overlay"><h2 id="recognizedSign">-</h2><p style="margin:4px 0;">Confianza: <span id="confidence">0</span>%</p><div class="confidence-bar"><div class="confidence-fill" id="confidenceFill" style="width:0%"></div></div></div>
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" id="cameraBtn" onclick="toggleCamera()">📷 Iniciar Cámara</button>
+
+                <div class="info-box">
+                    <strong>✨ Características:</strong><br>
+                    • Detecta hasta 2 manos simultáneamente<br>
+                    • Analiza trayectorias de movimiento<br>
+                    • Rastro visual en tiempo real<br>
+                    • Reconoce gestos estáticos y dinámicos
+                </div>
+            </div>
+
+            <div class="panel">
+                <div id="trainPanel">
+                    <h2 style="color:white; margin-bottom:10px;">Entrenar Nueva Seña</h2>
+                    <input type="text" id="signName" placeholder="Nombre de la seña (ej: Hola, Gracias, Te amo)">
+                    <button class="btn btn-success" id="recordBtn" onclick="recordSign()" disabled>⏺️ Grabar Seña (3 segundos)</button>
+                    <div class="info-box"> <strong>📝 Instrucciones:</strong><br>1. Escribe el nombre de la seña<br>2. Presiona "Grabar"<br>3. Realiza el gesto completo durante 3 segundos<br>4. Para gestos con movimiento, repítelo continuamente<br>5. Usa 1 o 2 manos según el gesto</div>
+                </div>
+
+                <h2>Importar</h2>
+                <!-- boton de importar entrenamiento (cargar desde .json)  -->
+                <input type="file" accept="application/json" onchange="importSigns(this.files[0])">
+<br><br>
+                <h2>Exportar</h2>
+                <!-- boton de exportar entrenamiento (generar .json)  -->
+                 <button onclick="exportSigns()">Exportar entrenamiento</button>
+<br><br>
+                <div id="recognizePanel" style="display:none;">
+                    <h2 style="color:white; margin-bottom:10px;">Reconocimiento Activo</h2>
+                    <div class="info-box"> <strong>👀 El sistema está analizando:</strong><br>• Posición de las manos<br>• Movimientos y trayectorias<br>• Configuración de los dedos<br><br>Realiza una seña frente a la cámara</div>
+                </div>
+
+          
+                <div class="signs-list">
+                    <h3 style="color:white; display:flex; justify-content:space-between; align-items:center;">Señas Entrenadas (<span id="signCount">0</span>) <button class="delete-btn" id="clearAllBtn" style="display:none;" onclick="clearAllSigns()">🗑️ Borrar Todo</button></h3>
+                    <div class="info-box" style="font-size:0.9em;">💾 Las señas se guardan automáticamente en tu navegador</div>
+                    <div id="signsList" class="empty-state">Sin señas entrenadas. ¡Comienza grabando una!</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- Constantes y elementos ---
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const canvasCtx = canvas.getContext('2d');
+        const trailCanvas = document.getElementById('trailCanvas');
+        const trailCtx = trailCanvas.getContext('2d');
+        const recordBtn = document.getElementById('recordBtn');
+
+        // HAND_CONNECTIONS por si no está disponible directamente
+        const HAND_CONNECTIONS = [
+            [0,1],[1,2],[2,3],[3,4],
+            [0,5],[5,6],[6,7],[7,8],
+            [5,9],[9,10],[10,11],[11,12],
+            [9,13],[13,14],[14,15],[15,16],
+            [13,17],[17,18],[18,19],[19,20],[0,17]
+        ];
+
+        let hands = null;
+        let cameraInstance = null;
+        let cameraStream = null;
+        let trainedSigns = {};
+        let currentMode = 'train';
+        let isRecording = false;
+        let recordingData = [];
+        let motionHistory = []; // historial por mano
+        let lastResults = null;
+
+        // --- Storage ---
+        function loadSigns() {
+            try {
+                const saved = localStorage.getItem('trainedSigns');
+                if (saved) {
+                    trainedSigns = JSON.parse(saved) || {};
+                }
+            } catch(e) { console.error(e); }
+            updateSignsList();
+        }
+        function saveSigns() {
+            try { localStorage.setItem('trainedSigns', JSON.stringify(trainedSigns)); } catch(e){console.error(e)}
+            updateSignsList();
+        }
+
+        // --- UI / Mode ---
+        function setMode(mode) {
+            currentMode = mode;
+            document.getElementById('trainBtn').classList.toggle('active', mode === 'train');
+            document.getElementById('recognizeBtn').classList.toggle('active', mode === 'recognize');
+            document.getElementById('trainPanel').style.display = mode === 'train' ? 'block' : 'none';
+            document.getElementById('recognizePanel').style.display = mode === 'recognize' ? 'block' : 'none';
+            if (mode === 'train') document.getElementById('recognitionOverlay').style.display = 'none';
+        }
+
+        // --- Inicializar MediaPipe Hands ---
+        function initializeMediaPipe() {
+            if (hands) return;
+            hands = new Hands({
+                locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+            });
+
+            hands.setOptions({
+                maxNumHands: 2,
+                modelComplexity: 1,
+                minDetectionConfidence: 0.55,
+                minTrackingConfidence: 0.5
+            });
+
+            hands.onResults(onResults);
+        }
+
+        // --- Procesamiento de resultados ---
+        function onResults(results) {
+            lastResults = results;
+            // dibujar fondo
+            canvasCtx.save();
+            canvasCtx.clearRect(0,0,canvas.width,canvas.height);
+            if (results.image) canvasCtx.drawImage(results.image, 0, 0, canvas.width, canvas.height);
+
+            let handsDetected = 0;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    handsDetected++;
+                    let handedness = 'Unknown';
+                    if (results.multiHandedness && results.multiHandedness[index]) {
+                        handedness = results.multiHandedness[index].label; // 'Left' or 'Right'
+                    }
+
+                    const color = handedness === 'Left' ? '#00FF00' : '#00FFFF';
+                    const dotColor = handedness === 'Left' ? '#FF0000' : '#0000FF';
+
+                    // Usar drawConnectors y drawLandmarks provistos por drawing_utils
+                    try {
+                        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: color, lineWidth:4});
+                        drawLandmarks(canvasCtx, landmarks, {color: dotColor, lineWidth:2, radius:3});
+                    } catch(e) { /* silent */ }
+
+                    updateMotionHistory(landmarks, index);
+                });
+                drawMotionTrail();
+            } else {
+                trailCtx.clearRect(0,0,trailCanvas.width,trailCanvas.height);
+                motionHistory = [];
+            }
+
+            canvasCtx.restore();
+            updateStatus(handsDetected);
+
+            if (isRecording && results) {
+                recordingData.push({landmarks: results.multiHandLandmarks ? results.multiHandLandmarks.map(l => JSON.parse(JSON.stringify(l))) : [], handedness: results.multiHandedness || [], timestamp: Date.now()});
+            }
+
+            if (currentMode === 'recognize' && !isRecording) {
+                recognizeSign(results);
+            }
+        }
+
+        // --- Movimiento ---
+        function updateMotionHistory(landmarks, handIndex) {
+            const indexTip = landmarks[8];
+            const centerX = indexTip.x * canvas.width;
+            const centerY = indexTip.y * canvas.height;
+            if (!motionHistory[handIndex]) motionHistory[handIndex] = [];
+            motionHistory[handIndex].push({x:centerX, y:centerY, timestamp: Date.now()});
+            if (motionHistory[handIndex].length > 40) motionHistory[handIndex].shift();
+        }
+
+        function drawMotionTrail() {
+            trailCtx.clearRect(0,0,trailCanvas.width, trailCanvas.height);
+            motionHistory.forEach((trail, handIndex) => {
+                if (!trail || trail.length < 2) return;
+                const color = handIndex === 0 ? '255, 255, 0' : '255, 0, 255';
+                for (let i=1;i<trail.length;i++){
+                    const alpha = i/trail.length;
+                    trailCtx.strokeStyle = `rgba(${color}, ${alpha * 0.9})`;
+                    trailCtx.lineWidth = 5;
+                    trailCtx.lineCap = 'round';
+                    trailCtx.beginPath();
+                    trailCtx.moveTo(trail[i-1].x, trail[i-1].y);
+                    trailCtx.lineTo(trail[i].x, trail[i].y);
+                    trailCtx.stroke();
+                }
+            });
+        }
+
+        // --- Estado UI ---
+        function updateStatus(handsDetected) {
+            const statusText = document.getElementById('statusText');
+            const statusBadge = document.getElementById('statusBadge');
+            statusBadge.style.display = 'block';
+            if (handsDetected === 0) {
+                statusText.textContent = '❌ Sin manos';
+                statusBadge.style.background = 'rgba(255,0,0,0.75)';
+            } else if (handsDetected === 1) {
+                statusText.textContent = '✋ 1 Mano';
+                statusBadge.style.background = 'rgba(255,152,0,0.85)';
+            } else {
+                statusText.textContent = '👐 2 Manos';
+                statusBadge.style.background = 'rgba(76,175,80,0.85)';
+            }
+        }
+
+        // --- Features / comparación ---
+        function extractFeatures(frame) {
+            if (!frame || !frame.landmarks || frame.landmarks.length === 0) return null;
+            const features = {hands:[], motion:[], timestamp: frame.timestamp || Date.now()};
+            frame.landmarks.forEach((landmarks, idx) => {
+                features.hands.push({landmarks: simplifyLandmarks(landmarks), handedness: (frame.handedness && frame.handedness[idx]) ? frame.handedness[idx].label : 'Unknown'});
+            });
+            motionHistory.forEach((trail)=>{
+                if (trail && trail.length>5) features.motion.push(calculateVelocities(trail));
+            });
+            return features;
+        }
+
+        function simplifyLandmarks(landmarks) {
+            const wrist = landmarks[0];
+            return landmarks.map(p => ({ x: p.x - wrist.x, y: p.y - wrist.y, z: p.z - wrist.z }));
+        }
+
+        function calculateVelocities(trail) {
+            if (!trail || trail.length < 2) return {avgVelX:0, avgVelY:0, maxVel:0};
+            const recent = trail.slice(-10);
+            let totalVelX=0, totalVelY=0, maxVel=0;
+            for (let i=1;i<recent.length;i++){
+                const dt = (recent[i].timestamp - recent[i-1].timestamp)/1000 || 0.001;
+                const velX = (recent[i].x - recent[i-1].x)/dt;
+                const velY = (recent[i].y - recent[i-1].y)/dt;
+                const vel = Math.sqrt(velX*velX + velY*velY);
+                totalVelX += velX; totalVelY += velY; maxVel = Math.max(maxVel, vel);
+            }
+            return { avgVelX: totalVelX/(recent.length-1), avgVelY: totalVelY/(recent.length-1), maxVel };
+        }
+
+        function compareLandmarks(lm1, lm2) {
+            if (!lm1 || !lm2 || lm1.length !== lm2.length) return 0;
+            let sum = 0;
+            for (let i=0;i<lm1.length;i++){
+                const dx = lm1[i].x - lm2[i].x;
+                const dy = lm1[i].y - lm2[i].y;
+                const dz = lm1[i].z - lm2[i].z;
+                sum += Math.sqrt(dx*dx + dy*dy + dz*dz);
+            }
+            const avgDist = sum / lm1.length;
+            return Math.max(0, 1 - avgDist * 8);
+        }
+
+        function compareMotion(m1, m2) {
+            if (!m1 || !m2) return 0;
+            const dx = Math.abs(m1.avgVelX - m2.avgVelX);
+            const dy = Math.abs(m1.avgVelY - m2.avgVelY);
+            const d = Math.sqrt(dx*dx + dy*dy);
+            return Math.max(0, 1 - d/1000);
+        }
+
+        function calculateSimilarity(features1, features2) {
+            if (!features1 || !features2) return 0;
+            // allow different number of hands: match by best pairing
+            const handsA = features1.hands || [];
+            const handsB = features2.hands || [];
+            if (handsA.length ===0 || handsB.length===0) return 0;
+            // simple greedy pairing
+            let totalScore = 0; let count=0;
+            const used = new Set();
+            for (let i=0;i<handsA.length;i++){
+                let best = 0, bestIdx = -1;
+                for (let j=0;j<handsB.length;j++){
+                    if (used.has(j)) continue;
+                    const s = compareLandmarks(handsA[i].landmarks, handsB[j].landmarks);
+                    if (s>best){ best = s; bestIdx = j; }
+                }
+                if (bestIdx>=0){ used.add(bestIdx); totalScore += best; count++; }
+            }
+            // motion
+            if (features1.motion.length>0 && features2.motion.length>0){ totalScore += compareMotion(features1.motion[0], features2.motion[0]); count++; }
+            return count>0 ? totalScore/count : 0;
+        }
+
+        // --- Reconocimiento simple ---
+        function recognizeSign(results) {
+            if (!results || !results.multiHandLandmarks || results.multiHandLandmarks.length===0) {
+                // ocultar
+                document.getElementById('recognitionOverlay').style.display = 'none';
+                return;
+            }
+            const sample = { landmarks: results.multiHandLandmarks, handedness: results.multiHandedness || [], timestamp: Date.now() };
+            const feat = extractFeatures(sample);
+            if (!feat) return;
+
+            let bestName = null; let bestScore = 0;
+            for (const name in trainedSigns) {
+                const entry = trainedSigns[name];
+                if (!entry || !entry.data || entry.data.length===0) continue;
+                // Compare against the average features of the stored data
+                const storedFeatures = mergeStoredFeatures(entry.data);
+                const score = calculateSimilarity(feat, storedFeatures);
+                if (score > bestScore) { bestScore = score; bestName = name; }
+            }
+
+            // umbral
+            const threshold = 0.60;
+            if (bestName && bestScore >= threshold) {
+                showRecognition(bestName, Math.round(bestScore*100));
+            } else {
+                document.getElementById('recognitionOverlay').style.display = 'none';
+            }
+        }
+
+        function mergeStoredFeatures(arr) {
+            // arr: array of feature objects
+            if (!arr || arr.length===0) return null;
+            // take the middle element (simple heuristic) or average -- do a simple average of landmarks per hand position
+            // For simplicity, pick the longest (most hands) entry
+            let best = arr[0];
+            for (let i=1;i<arr.length;i++){
+                if (arr[i] && arr[i].hands && arr[i].hands.length > (best.hands ? best.hands.length : 0)) best = arr[i];
+            }
+            return best;
+        }
+
+        function showRecognition(name, confidence) {
+            const overlay = document.getElementById('recognitionOverlay');
+            document.getElementById('recognizedSign').textContent = name;
+            document.getElementById('confidence').textContent = confidence;
+            document.getElementById('confidenceFill').style.width = Math.min(100, confidence) + '%';
+            overlay.style.display = 'block';
+        }
+
+        // --- Cámara ---
+        async function toggleCamera() {
+            const btn = document.getElementById('cameraBtn');
+            const placeholder = document.getElementById('placeholder');
+
+            if (cameraInstance) {
+                try { cameraInstance.stop(); } catch(e){}
+                cameraInstance = null;
+            }
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(t=>t.stop());
+                cameraStream = null;
+            }
+
+            if (video.srcObject) {
+                // ya estaba corriendo -> detener
+                video.srcObject = null;
+                video.style.display = 'none';
+                placeholder.style.display = 'block';
+                document.getElementById('recordBtn').disabled = true;
+                btn.textContent = '📷 Iniciar Cámara';
+                document.getElementById('statusBadge').style.display = 'none';
+                return;
+            }
+
+            try {
+                initializeMediaPipe();
+                cameraStream = await navigator.mediaDevices.getUserMedia({ video: { width:640, height:480, facingMode: 'user' } });
+                video.srcObject = cameraStream;
+                await video.play();
+                canvas.width = 640; canvas.height = 480; trailCanvas.width = 640; trailCanvas.height = 480;
+                video.style.display = 'block'; placeholder.style.display = 'none';
+                document.getElementById('recordBtn').disabled = false;
+                document.getElementById('cameraBtn').textContent = '⏹️ Detener Cámara';
+
+                // Usar Camera de MediaPipe
+                cameraInstance = new Camera(video, {
+                    onFrame: async () => { await hands.send({image: video}); },
+                    width: 640, height: 480
+                });
+                cameraInstance.start();
+            } catch(err) {
+                placeholder.innerHTML = `<div style="background: rgba(255,0,0,0.25); padding:12px; border-radius:8px; color:#ffdddd;"><h3>⚠️ Error de cámara</h3><p>${err.message}</p><p>Verifica permisos del navegador.</p></div>`;
+                console.error(err);
+            }
+        }
+
+        // --- Grabación ---
+        function recordSign() {
+            const name = document.getElementById('signName').value.trim();
+            if (!name) { alert('⚠️ Ingresa un nombre para la seña'); return; }
+            if (!cameraInstance && !video.srcObject) { alert('📷 Inicia la cámara primero'); return; }
+
+            isRecording = true; recordingData = []; recordBtn.disabled = true; document.getElementById('recordingIndicator').style.display = 'flex';
+            setTimeout(()=>{
+                isRecording = false; document.getElementById('recordingIndicator').style.display = 'none'; recordBtn.disabled = false;
+                if (recordingData.length > 8) {
+                    const processed = recordingData.map(frame => extractFeatures(frame)).filter(f=>f);
+                    trainedSigns[name] = { data: processed, timestamp: Date.now(), frames: recordingData.length };
+                    saveSigns();
+                    alert(`✅ Seña "${name}" guardada (${recordingData.length} frames)`);
+                } else {
+                    alert('❌ No se capturaron suficientes frames. Intenta de nuevo.');
+                }
+            }, 3000);
+        }
+
+        // --- Lista de señas ---
+        function updateSignsList(){
+            const container = document.getElementById('signsList');
+            container.innerHTML = '';
+            const keys = Object.keys(trainedSigns || {});
+            document.getElementById('signCount').textContent = keys.length;
+            document.getElementById('clearAllBtn').style.display = keys.length > 0 ? 'inline-block' : 'none';
+            if (keys.length === 0) { container.className = 'empty-state'; container.textContent = 'Sin señas entrenadas. ¡Comienza grabando una!'; return; }
+            keys.forEach(name => {
+                const entry = trainedSigns[name];
+                const div = document.createElement('div'); div.className = 'sign-item';
+                const left = document.createElement('div'); left.innerHTML = `<div style="font-weight:700;color:white">${name}</div><div style="font-size:0.85em;color:rgba(255,255,255,0.8)">${entry.frames || 0} frames • ${new Date(entry.timestamp).toLocaleString()}</div>`;
+                const right = document.createElement('div');
+                const del = document.createElement('button'); del.className='delete-btn'; del.textContent='Eliminar'; del.onclick = ()=>{ if (confirm(`Borrar seña "${name}"?`)){ delete trainedSigns[name]; saveSigns(); } };
+                right.appendChild(del); div.appendChild(left); div.appendChild(right); container.appendChild(div);
+            });
+        }
+
+        function clearAllSigns(){ if (confirm('Borrar todas las señas entrenadas?')){ trainedSigns = {}; saveSigns(); } }
+
+        // --- Inicio ---
+        loadSigns();
+        setMode('train');
+
+        // Resize canvases responsive
+        window.addEventListener('resize', ()=>{
+            const w = video.clientWidth || 640;
+            const h = video.clientHeight || 480;
+            canvas.width = w; canvas.height = h; trailCanvas.width = w; trailCanvas.height = h;
+        });
+
+// --- Exportar datos de entrenamiento ---
+    function exportSigns() {
+        const data = JSON.stringify(trainedSigns, null, 2);
+        const blob = new Blob([data], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
+
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'entrenamiento_lessa.json';
+        link.click();
+
+        URL.revokeObjectURL(url);
+    }
+// --- Exportar datos de entrenamiento ---
+
+    async function importSigns(file) {
+        const text = await file.text();
+        try {
+            const data = JSON.parse(text);
+
+            for (const key in data) {
+                trainedSigns[key] = data[key];
+            }
+
+            saveSigns();
+            updateSignsList();
+            alert("Entrenamiento importado correctamente.");
+
+        } catch (err) {
+            alert("Error al importar: " + err.message);
+        }
+    }
+
+
+    </script>
+</body>
+</html>
