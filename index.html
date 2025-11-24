@@ -195,88 +195,10 @@ MEJORAS AÑADIDAS:
 
     // Nota: ya cargamos loadSigns() en el inicio del script; si ya existía, esta versión la reemplaza.
 
-
-// --- Exportar datos de entrenamiento (WebView compatible) ---
-function exportSigns() {
-    const data = JSON.stringify(trainedSigns);
-    if (window.AppInventor) {
-        window.AppInventor.setWebViewString(data);
-    } else if (window.Kodular) {
-        window.Kodular.setWebViewString(data);
-    } else {
-        alert("No se detectó WebView compatible.");
-    }
-}
-
-// --- Importar datos (WebView PostMessage) ---
-window.addEventListener("message", event => {
-    try {
-        const obj = JSON.parse(event.data);
-        for (const key in obj) trainedSigns[key] = obj[key];
-        saveSigns();
-        updateSignsList();
-        alert("Entrenamiento importado correctamente.");
-    } catch(err) {
-        alert("Error al importar: " + err.message);
-    }
-});
-
 </script>
 
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous">
-// --- Exportar datos de entrenamiento (WebView compatible) ---
-function exportSigns() {
-    const data = JSON.stringify(trainedSigns);
-    if (window.AppInventor) {
-        window.AppInventor.setWebViewString(data);
-    } else if (window.Kodular) {
-        window.Kodular.setWebViewString(data);
-    } else {
-        alert("No se detectó WebView compatible.");
-    }
-}
-
-// --- Importar datos (WebView PostMessage) ---
-window.addEventListener("message", event => {
-    try {
-        const obj = JSON.parse(event.data);
-        for (const key in obj) trainedSigns[key] = obj[key];
-        saveSigns();
-        updateSignsList();
-        alert("Entrenamiento importado correctamente.");
-    } catch(err) {
-        alert("Error al importar: " + err.message);
-    }
-});
-
-</script>
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous">
-// --- Exportar datos de entrenamiento (WebView compatible) ---
-function exportSigns() {
-    const data = JSON.stringify(trainedSigns);
-    if (window.AppInventor) {
-        window.AppInventor.setWebViewString(data);
-    } else if (window.Kodular) {
-        window.Kodular.setWebViewString(data);
-    } else {
-        alert("No se detectó WebView compatible.");
-    }
-}
-
-// --- Importar datos (WebView PostMessage) ---
-window.addEventListener("message", event => {
-    try {
-        const obj = JSON.parse(event.data);
-        for (const key in obj) trainedSigns[key] = obj[key];
-        saveSigns();
-        updateSignsList();
-        alert("Entrenamiento importado correctamente.");
-    } catch(err) {
-        alert("Error al importar: " + err.message);
-    }
-});
-
-</script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
     
     
     <style>
@@ -777,9 +699,29 @@ window.addEventListener("message", event => {
         });
 
 // --- Exportar datos de entrenamiento ---
-    // --- Exportar datos de entrenamiento ---
+    function exportSigns() {
+        const data = JSON.stringify(trainedSigns, null, 2);
+        const blob = new Blob([data], {type: 'application/json'});
+        const url = URL.createObjectURL(blob);
 
-    
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'entrenamiento_lessa.json';
+        link.click();
+
+        URL.revokeObjectURL(url);
+    }
+// --- Exportar datos de entrenamiento ---
+
+    async function importSigns(file) {
+        const text = await file.text();
+        try {
+            const data = JSON.parse(text);
+
+            for (const key in data) {
+                trainedSigns[key] = data[key];
+            }
+
             saveSigns();
             updateSignsList();
             alert("Entrenamiento importado correctamente.");
@@ -790,33 +732,7 @@ window.addEventListener("message", event => {
     }
 
 
-    
-// --- Exportar datos de entrenamiento (WebView compatible) ---
-function exportSigns() {
-    const data = JSON.stringify(trainedSigns);
-    if (window.AppInventor) {
-        window.AppInventor.setWebViewString(data);
-    } else if (window.Kodular) {
-        window.Kodular.setWebViewString(data);
-    } else {
-        alert("No se detectó WebView compatible.");
-    }
-}
-
-// --- Importar datos (WebView PostMessage) ---
-window.addEventListener("message", event => {
-    try {
-        const obj = JSON.parse(event.data);
-        for (const key in obj) trainedSigns[key] = obj[key];
-        saveSigns();
-        updateSignsList();
-        alert("Entrenamiento importado correctamente.");
-    } catch(err) {
-        alert("Error al importar: " + err.message);
-    }
-});
-
-</script>
+    </script>
 </body>
 </html>
 
@@ -842,7 +758,7 @@ window.addEventListener("message", event => {
 
     .video-wrapper {
         width: 100%;
-        padding-bottom: 150%;
+        padding-bottom: 145%;
     }
 
     video,
