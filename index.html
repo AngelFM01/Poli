@@ -11,6 +11,7 @@ MEJORAS AÑADIDAS:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="logopoli.png" type="image/png">
     <title>Traductor de Lenguaje de Señas</title>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous">
     // ----------------------
@@ -238,7 +239,10 @@ MEJORAS AÑADIDAS:
 </head>
 <body>
     <div class="container">
-        <h1>🤟 Traductor de Lenguaje de Señas</h1>
+        <div class="titulo-flex">
+            <h1>🤟 Traductor de Lenguaje de Señas</h1>
+            <img src="signo upes.png" alt="Logo" class="titulo-img">
+        </div>
         <p class="subtitle">Detección de 2 manos con análisis de movimiento</p>
 
         <div class="mode-selector">
@@ -781,6 +785,7 @@ MEJORAS AÑADIDAS:
 
     body {
         padding: 0 !important;
+        padding-top: 15px !important;
         margin: 0 !important;
     }
 
@@ -853,6 +858,48 @@ MEJORAS AÑADIDAS:
     .recognition-overlay {
         transform: scale(0.8);
     }
+}
+
+
+
+body {
+  background: linear-gradient(135deg, #19223D 0%, #174974 100%);
+}
+
+/* Paneles principales */
+
+
+.btn-success {
+  background: #3eb74a;
+  color: white;
+}
+
+
+/* Segundo color de acento, para botones secundarios o detalles */
+.mode-btn.active, .confidence-fill {
+  background: #55B8CF;
+  background: #0856d4;
+
+}
+.titulo-flex {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  gap: 18px;
+}
+
+.titulo-flex h1 {
+  width: 100%;
+  text-align: center;
+  margin: 0;
+}
+
+.titulo-img {
+  margin-left: auto;
+  width: 150px;
+  height: auto;
+  display: block;
 }
 
 
